@@ -1,0 +1,61 @@
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python Caches, Bytecode & Tooling
+__pycache__/
+*/__pycache__/
+*.py[cod]
+*$py.class
+.cache/
+**/.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# IDE & Editor Files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# Dataset Folders Not Directly Used in FL
+pytorchexample/dataset/PeMSD7_Full/
+**/PeMSD7_Full/
+
+# Model Checkpoints & Weights
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.onnx
+
+# Experiment Runs & Generated Outputs
+results/run_*.json
+results/run_*.png
+# Allow tracking the folder structure and publication summary figures
+!results/.gitkeep
+!results/paper_comparison_*.png
+
+# Flower Runtime, Databases & Logs
+.flwr/
+*.db
+*.sqlite
+*.sqlite3
+superlink.log
+*.log
+out.txt
+*.tmp
+
+# Packaging & Build Artifacts
+build/
+dist/
+*.egg-info/
