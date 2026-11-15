@@ -26,23 +26,26 @@ include = [
 publisher = "flwrlabs"
 fab-format-version = 1
 flwr-version-target = "1.42.0"
-
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+                                                                                                                                                                    
 [tool.flwr.app.components]
 serverapp = "pytorchexample.server_app:app"
 clientapp = "pytorchexample.client_app:app"
 
 [tool.flwr.app.config]
-num-server-rounds = 100
-learning-rate = 0.0005
-fraction-fit = 0.04
+num-server-rounds = 150
+learning-rate = 0.01
+fraction-fit = 0.05
 sigma = 2.0
 alpha = 0.5
 centrality-type = "degree"     # pagerank or degree
-sampling-mode = "random"       # dpp or random
-save-model = true
+sampling-mode = "random"       # dpp, random, or poc
+poc-d = 20
+seed = 42
+save-model = false
 local-epochs = 2
 local-steps = 10
-hidden-dim = 16
+hidden-dim = 8
 batch-size = 32
 target-accuracy = 95.0
 

@@ -26,7 +26,7 @@ class FlowerClient(NumPyClient):
         self.local_epochs  = local_epochs
         self.local_steps   = local_steps
         self.lr            = lr
-        self.device        = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device        = torch.device("cpu")
         self.model         = GRUForecaster(hidden_dim=hidden_dim).to(self.device)
         self.trainloader, self.valloader = load_data(partition_id, batch_size)
 
@@ -52,6 +52,10 @@ class FlowerClient(NumPyClient):
             for k, v in zip(self.model.state_dict().keys(), parameters)
         }
         self.model.load_state_dict(state_dict)
+        # PoC asks for local *training* loss; normal eval uses validation data
+        if config.get("loss-on") == "train":
+            loss, mae = test(self.model, self.trainloader, self.device)
+            return loss, len(self.trainloader.dataset), {"mae": mae}
         loss, mae = test(self.model, self.valloader, self.device)
         return loss, len(self.valloader.dataset), {"mae": mae}
 
