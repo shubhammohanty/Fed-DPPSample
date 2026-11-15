@@ -69,7 +69,8 @@ class TrafficDataset(Dataset):
 
 # ── Data loading ─────────────────────────────────────────────────────────────
 
-DATA_DIR = Path(__file__).resolve().parent / "dataset"
+_SERVER_DATA_DIR = Path("/driveB/FL/group9/flproject/Fed-DPPSample/pytorchexample/dataset")
+DATA_DIR = _SERVER_DATA_DIR if _SERVER_DATA_DIR.exists() else (Path(__file__).resolve().parent / "dataset")
 
 def _load_csv(fname):
     path = os.path.join(DATA_DIR, fname)

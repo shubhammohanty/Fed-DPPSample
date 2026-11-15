@@ -1,0 +1,16 @@
+# Core Federated Learning & Simulation Engine
+flwr[simulation]>=1.42.0
+
+# PyTorch Deep Learning
+torch==2.5.1
+torchvision==0.20.1
+
+# Scientific, Graph & Determinantal Point Processes (DPP)
+numpy>=1.26.0,<3.0.0
+scipy>=1.12.0
+pandas>=2.0.0
+dppy>=0.3.3
+networkx>=3.0.0
+
+# Plotting & Visualization
+matplotlib>=3.8.0

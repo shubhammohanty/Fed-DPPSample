@@ -23,10 +23,12 @@ from flwr.compat.common.typing import Parameters
 from flwr.serverapp import ServerApp
 from flwr.app import Context
 from flwr.compat.common.parameter import ndarrays_to_parameters, parameters_to_ndarrays
-from flwr.compat.common.typing import FitIns
+from flwr.compat.common.typing import FitIns, EvaluateIns
+from concurrent.futures import ThreadPoolExecutor
 from pytorchexample.task import GRUForecaster, get_weights, load_centralized_dataset, test
 
-DATA_DIR = Path(__file__).resolve().parent / "dataset"
+_SERVER_DATA_DIR = Path("/driveB/FL/group9/flproject/Fed-DPPSample/pytorchexample/dataset")
+DATA_DIR = _SERVER_DATA_DIR if _SERVER_DATA_DIR.exists() else (Path(__file__).resolve().parent / "dataset")
 
 app = ServerApp()
 
@@ -60,13 +62,14 @@ def build_L(centrality, shortest_paths, ages, sigma, alpha):
 
 def dpp_sample(centrality, shortest_paths, ages, k, sigma, alpha):
     from dppy.finite_dpps import FiniteDPP
-    L = build_L(centrality, shortest_paths, ages, sigma, alpha)
+    L = build_L(centrality, shortest_paths, ages, sigma, alpha).astype(np.float64)
     # Ensure L is symmetric and Positive Semi-Definite (PSD)
     L = (L + L.T) / 2.0
     eigvals, eigvecs = np.linalg.eigh(L)
     eigvals = np.clip(eigvals, 1e-7, None)
-    L = (eigvecs * eigvals) @ eigvecs.T
-    dpp = FiniteDPP(kernel_type="likelihood", L=L)
+    # Pass the clipped eigendecomposition directly, so dppy does not
+    # re-decompose L and hit tiny negative eigenvalues from round-off
+    dpp = FiniteDPP(kernel_type="likelihood", L_eig_dec=(eigvals, eigvecs))
     dpp.sample_exact_k_dpp(size=k)
     return [int(x) for x in dpp.list_of_samples[0]]
 
@@ -75,12 +78,32 @@ def random_sample(k, num_clients):
     return [int(x) for x in np.random.choice(num_clients, size=k, replace=False)]
 
 
+def poc_sample(k, d, parameters, all_clients, cid_list, server_round):
+    """Power-of-Choice (Cho et al.): pick d random candidates, query their
+    local training loss on the current global model, keep the top-k."""
+    num_clients = len(cid_list)
+    d = min(max(d, k), num_clients)
+    candidates = [int(x) for x in np.random.choice(num_clients, size=d, replace=False)]
+    ins = EvaluateIns(parameters, {"loss-on": "train"})
+
+    def query(i):
+        res = all_clients[cid_list[i]].evaluate(ins, timeout=None, group_id=server_round)
+        return i, float(res.loss)
+
+    with ThreadPoolExecutor(max_workers=d) as ex:
+        losses = dict(ex.map(query, candidates))
+    top_k = sorted(candidates, key=lambda i: losses[i], reverse=True)[:k]
+    return top_k, candidates, losses
+
+
 # ── Custom Strategy ───────────────────────────────────────────────────────────
 
 class DPPFedAvg(FedAvg):
     def __init__(self, shortest_paths, centrality, sigma, alpha,
-                 sampling_mode, fraction_fit, **kwargs):
+                 sampling_mode, fraction_fit, poc_d=20, **kwargs):
         super().__init__(fraction_fit=fraction_fit, **kwargs)
+        self.poc_d = poc_d
+        self.poc_log = []  # per-round PoC candidates + losses (extra comm cost)
         self.shortest_paths = shortest_paths
         self.centrality = centrality
         self.sigma = sigma
@@ -111,6 +134,13 @@ class DPPFedAvg(FedAvg):
                 self.centrality, self.shortest_paths,
                 self.ages, k, self.sigma, self.alpha
             )
+        elif self.sampling_mode == "poc":
+            selected_idx, cands, losses = poc_sample(
+                k, self.poc_d, parameters, all_clients, cid_list, server_round
+            )
+            self.poc_log.append({"round": server_round, "candidates": cands,
+                                 "losses": {str(i): losses[i] for i in cands}})
+            print(f"[Round {server_round}] PoC queried {len(cands)} clients for loss")
         else:
             selected_idx = random_sample(k, num_clients)
 
@@ -147,13 +177,15 @@ def get_evaluate_fn(testloader, device, hidden_dim=32):
 # ── Results Logging & Plotting ────────────────────────────────────────────────
 
 def save_experiment_results(run_metadata, round_records):
-    results_dir = Path(__file__).resolve().parent.parent / "results"
+    _SERVER_RESULTS_DIR = Path("/driveB/FL/group9/flproject/Fed-DPPSample/results")
+    results_dir = _SERVER_RESULTS_DIR if _SERVER_RESULTS_DIR.parent.exists() else (Path(__file__).resolve().parent.parent / "results")
     results_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     mode = run_metadata.get("sampling-mode", "unknown")
 
     # Save JSON log
-    json_path = results_dir / f"run_{mode}_{timestamp}.json"
+    seed = run_metadata.get("seed", "na")
+    json_path = results_dir / f"run_{mode}_s{seed}_{timestamp}.json"
     with open(json_path, "w") as f:
         json.dump({"metadata": run_metadata, "history": round_records}, f, indent=2)
 
@@ -218,7 +250,7 @@ def save_experiment_results(run_metadata, round_records):
     ax4.legend()
 
     plt.tight_layout()
-    png_path = results_dir / f"run_{mode}_{timestamp}.png"
+    png_path = results_dir / f"run_{mode}_s{seed}_{timestamp}.png"
     fig.savefig(png_path, dpi=200)
     plt.close(fig)
 
@@ -328,6 +360,8 @@ class EarlyStoppingServer(Server):
                     "mean_spatial_distance": mean_dist,
                     "cumulative_sensors_covered": unique_count,
                     "cumulative_coverage_percent": coverage_pct,
+                    "poc_queried": len(self.strategy.poc_log[-1]["candidates"])
+                        if getattr(self.strategy, "poc_log", None) and self.strategy.sampling_mode == "poc" else 0,
                 })
 
                 acc = metrics_cen.get("accuracy", 0.0)
@@ -359,6 +393,11 @@ def server_fn(context: Context) -> ServerAppComponents:
     sampling_mode   = context.run_config["sampling-mode"]
     target_accuracy = context.run_config.get("target-accuracy", 95.0)
     hidden_dim      = context.run_config.get("hidden-dim", 32)
+    poc_d           = context.run_config.get("poc-d", 20)
+    seed            = context.run_config.get("seed", 42)
+
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
     shortest_paths, centrality = load_graph_data(centrality_type)
 
@@ -366,7 +405,7 @@ def server_fn(context: Context) -> ServerAppComponents:
     model = GRUForecaster(hidden_dim=hidden_dim)
     initial_parameters = ndarrays_to_parameters(get_weights(model))
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
     testloader = load_centralized_dataset(batch_size=64)
     evaluate_fn = get_evaluate_fn(testloader, device, hidden_dim=hidden_dim)
 
@@ -377,6 +416,7 @@ def server_fn(context: Context) -> ServerAppComponents:
         alpha=alpha,
         sampling_mode=sampling_mode,
         fraction_fit=fraction_fit,
+        poc_d=poc_d,
         fraction_evaluate=0.0,
         initial_parameters=initial_parameters,
         min_available_clients=228,
